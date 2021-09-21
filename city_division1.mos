@@ -1,0 +1,81 @@
+model city_division
+uses "mmxprs","mmquad"
+
+declarations
+  region = 1..3
+  stations = 1..106
+  Latitude : array(stations) of real
+  Longitude : array(stations) of real
+  net_flow_in : array(stations) of real    ! binary variable indicate whether the number of trips ended here is greater than the number of trips started from here over one week
+  net_flow_out : array(stations) of real   ! binary variable indicate whether the number of trips started from here is greater than the number of trips ended here over one week
+  !station_name : array(stations) of string
+  station_id : array(stations) of real
+  X : array(stations, region) of mpvar     ! binary variable indicate whether station s belongs to region r
+  length : array(region) of mpvar        ! the length of one region
+  number_of_stations : array(region) of mpvar  ! the number of stations in one region
+end-declarations
+
+initialisations from "city_division_29.dat"
+  Latitude Longitude net_flow_in net_flow_out station_id
+end-initialisations
+
+! objective function
+total_length := sum(r in region) length(r)
+
+! constraints
+forall(s in stations, r in region) X(s,r) is_binary
+
+! every station should be in exact one region
+forall(s in stations) sum(r in region) X(s,r) = 1
+
+! the total number of stations in one region should be less than 50
+forall(r in region) sum(s in stations) X(s,r) <= 50
+
+! one region should contain both net_flow_in and net_flow_out stations, and the number of these two types should be roughly equal
+forall(r in region) sum(s in stations) net_flow_in(s) * X(s,r) - sum(s in stations) net_flow_out(s) * X(s,r) <= 10
+forall(r in region) sum(s in stations) net_flow_in(s) * X(s,r) - sum(s in stations) net_flow_out(s) * X(s,r) >= -10
+
+! the longest distance (in coordinate) between any stations in one region should be less than 0.15
+forall(r in region) do
+  forall(s1 in stations) do
+    forall(s2 in stations) do
+      ((Latitude(s1) - Latitude(s2))^2 + (Longitude(s1) - Longitude(s2))^2)^0.5 <= 0.15 + 100*(2-X(s1,r)-X(s2,r))
+      ((Latitude(s1) - Latitude(s2))^2 + (Longitude(s1) - Longitude(s2))^2)^0.5 <= length(r) + 100*(2-X(s1,r)-X(s2,r))
+    end-do
+  end-do
+end-do
+
+! calculate the number of stations in one region
+forall(r in region) number_of_stations(r) = sum(s in stations) X(s,r)
+
+minimize(total_length)
+
+!output
+writeln
+writeln("***** the total_length of 3 regions is ", getobjval, ", which I don't care! *****")
+forall(r in region) do
+  writeln
+  writeln("The length of region ", r, " is ", getsol(length(r)),", which I don't care either!")
+  writeln
+  writeln("Now what we do care about is :")
+  writeln("There are ", getsol(number_of_stations(r)) , " stations in region ", r, ". ")
+  writeln
+  forall(s in stations) do
+    if(getsol(X(s,r))>0) then
+      writeln("the station ", s, ", station_id ", station_id(s), " belongs to region ",r)
+    end-if
+  end-do
+end-do
+
+fopen("city_division.csv",F_OUTPUT)
+writeln("station_id,region")
+forall(s in stations) do
+  forall(r in region) do
+    if(getsol(X(s,r))>0) then
+      writeln(station_id(s),",",r)
+    end-if
+  end-do
+end-do
+fclose(F_OUTPUT)
+
+end-model

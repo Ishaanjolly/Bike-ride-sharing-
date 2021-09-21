@@ -1,0 +1,132 @@
+!! Model: driver_schedule_region1
+!! Writer: MMCS Group2
+!! Input: a matrix from last week's data, which provide the number of bikes that add to station s in time t (+ -)
+!! Output: a driver schedule (driver should rebalance station s at time t)
+!! Idea: minimize the gap between the number of stations need to be rebalanced and the number of stations we actually rebalanced
+!! Assumption: the van has enough bikes and enough space to rebalance the over-limited stations
+!! Assumption: the number of bikes will go back to 5 (default value) if the driver rebalance the station
+!! Assumption: the driver will do the continuous 12-hour-shift, at most 12 hours one day
+!! Assumption: the driver won't need to work before 6am
+!! Parameter: there are 17 stations in this region
+!! Parameter: every station has 5 bikes at the starting time of one week (t=1)
+!! Parameter: the acceptable range of bike number in one station is [2,8]
+!! Parameter: 1 driver can rebalance at most 6 stations in 1 hour in small region
+!! You can adjust these parameters** based on your real data and experience
+
+model driver_schedule_region1
+  uses "mmxprs"
+
+declarations
+  time = 1..24                             ! 0:00-1:00...23:00-24:00
+  stations = 1..17                         ! the number of stations in one region**
+  net_add : array(stations, time) of real  ! the number of bikes that add to station s in time t, can be positive (drop > pick) or negative (drop < pick)
+  station_id : array(stations) of real     ! the station id
+  ava_bikes : array(stations, time) of mpvar ! the number of available bikes at station s in time t
+  R : array(stations, time) of mpvar       ! binary variable indicate whether the driver actually rebalanced station s in time t
+  W : array(time) of mpvar                 ! binary variable indicate whether the driver start his 12-hour shift from time t
+  Upper : array(stations, time) of mpvar   ! binary variable indicate whether the number of bikes is more than 8
+  Lower : array(stations, time) of mpvar   ! binary variable indicate whether the number of bikes is less than 2
+end-declarations
+
+! initialize the net_add from the last week's data(need pre-processing from R or Python)
+! the number of bikes that add to station s in time t, can be positive(drop > pick) or negative(drop < pick)
+initialisations from "net_add_region1.dat"
+  net_add station_id
+end-initialisations
+
+! objective function
+! minimize the difference between the number of stations need to be rebalanced and the number of stations we actually rebalanced
+unbalanced_stations := sum(s in stations, t in time) (Upper(s,t) + Lower(s,t) - R(s,t))
+
+! Constraints
+forall(s in stations, t in time) R(s,t) is_binary      ! binary variable indicate whether the driver rebalanced station s in time t
+forall(s in stations, t in time) Upper(s,t) is_binary  ! Upper(s,t) binary variable indicate whether the number of bikes is more than 8
+forall(s in stations, t in time) Lower(s,t) is_binary  ! Upper(s,t) binary variable indicate whether the number of bikes is less than 2
+forall(s in stations, t in time) ava_bikes(s,t) is_free
+
+! Assume that every station has 5 bikes at the starting time of one week (t=1)
+! You can change this parameter 5 into the real data, the number of bikes at each station at the starting time of one week**
+! Assume that the number of ava_bikes(s,t) = ava_bikes(s,t-1) + net_add(s,t-1) before 6am. (No drivers work before 6am)
+! And after 6am the number of ava_bikes(s,t) depend on whether the driver rebalance this station at time t-1
+! If the station is over-limit and driver rebalanced it at time t-1, then R(s,t-1)=1, then ava_bikes(s,t)=5
+! If the driver hasn't rebalanced it at time t-1, then R(s,t-1)=0, then ava_bikes(s,t) = ava_bikes(s,t-1) + net_add(s,t-1)
+forall(s in stations) do
+  forall(t in time) do
+    if(t=1) then
+      ava_bikes(s,t) = 5
+      R(s,t) = 0
+    elif(t>=2 and t<=6) then
+      ava_bikes(s,t) = ava_bikes(s,t-1) + net_add(s,t-1)
+      R(s,t) = 0
+    else
+      ava_bikes(s,t) <= ava_bikes(s,t-1) + net_add(s,t-1) + 1000*R(s,t-1)  ! if R(s,t)=0, ava_bikes(s,t+1) = ava_bikes(s,t) + net_add(s,t)
+      ava_bikes(s,t) >= ava_bikes(s,t-1) + net_add(s,t-1) - 1000*R(s,t-1)  ! if R(s,t)=1, ava_bikes(s,t+1) = 5
+      ava_bikes(s,t) <= 5 + 1000*(1-R(s,t-1))
+      ava_bikes(s,t) >= 5 - 1000*(1-R(s,t-1))
+    end-if
+  end-do
+end-do
+
+! Assume that the acceptable range of bike number in one station is [2,8]
+! We use Lower(s,t) and Upper(s,t) to indicate whether the number is over limit
+! You can adjust the parameter 2,8 based on experience**
+forall(t in time) do
+  forall(s in stations) do
+    ava_bikes(s,t) + net_add(s,t) >= 2 - 1000*Lower(s,t)  ! Lower(s,t)=1 => ava_bikes(s,t) + net_add(s,t) < 2, over-Lower-limit!
+    ava_bikes(s,t) + net_add(s,t) <= 8 + 1000*Upper(s,t)  ! Upper(s,t)=1 => ava_bikes(s,t) + net_add(s,t) > 8, over-Upper-limit!
+    Upper(s,t)  + Lower(s,t) <= 1
+  end-do
+end-do
+
+! You can't rebalance station s if it doesn't need to be rebalanced (if Upper(s,t)+Lower(s,t)=0 => R(s,t)=0)
+! But you can choose not to rebalance station s if it needs to be rebalanced (if Upper(s,t)+Lower(s,t)=1 => R(s,t)=0 or 1)
+forall(s in stations, t in time) R(s,t) <= Upper(s,t) + Lower(s,t)
+
+! Assume that 1 driver can rebalance at most 6 stations in 1 hour in small region (the number of stations is smaller than 30)
+! You can adjust this parameter 10 based on experience**
+forall(t in time) sum(s in stations) R(s,t) <= 6
+
+! Use binary variable W(t) to indicate the starting working hour of the driver
+! No driver should work before 6am
+forall(t in time) W(t) is_binary
+forall(t in 1..6) W(t) = 0
+sum(t in time) W(t) = 1
+
+! Constraint on 12 hours shift
+forall(s in stations) do
+  forall(t1 in time) R(s,t1) <= sum(t2 in time | t2 <= t1 and t1-t2<=11) W(t2)
+end-do
+
+minimize(unbalanced_stations)
+
+! Output
+writeln
+writeln("In region 1 the total number of unbalanced stations is ", getobjval)
+writeln
+forall(t in time) do
+  if(getsol(W(t))>0) then
+    writeln("The driver should start his 12-hours shift at ", t-1, " o'clock.")
+  end-if
+end-do
+
+writeln
+forall(t in time) do
+  forall(s in stations) do
+    if(getsol(R(s,t)) = 1) then
+      writeln("The driver should rebalance station ", s," id ", station_id(s), " at ", t-1, ":00 - ", t, ":00")
+    end-if
+  end-do
+end-do
+
+fopen("unbalanced_r1.csv",F_OUTPUT)
+writeln("station_id,t")
+forall(t in time) do
+  forall(s in stations) do
+    if(getsol(R(s,t)) = 1) then
+      writeln(station_id(s), ",", t-1)
+    end-if
+  end-do
+end-do
+fclose(F_OUTPUT)
+
+end-model
